@@ -6,7 +6,10 @@ import joblib
 # Configuración de la página
 st.set_page_config(page_title="Predictor de Red Neuronal", layout="centered")
 
-# Cargar modelos y transformadores en caché para optimizar velocidad
+# ==============================
+# CARGAR MODELOS Y ARTEFACTOS
+# ==============================
+
 @st.cache_resource
 def cargar_artefactos():
     modelo = joblib.load('modelo_red_neuronal.joblib')
@@ -19,70 +22,104 @@ def cargar_artefactos():
     
     return modelo, scaler, cols_escalar, cols_categoricas, le_binarios, ohe, feature_columns
 
+
 try:
     modelo, scaler, cols_escalar, cols_categoricas, le_binarios, ohe, feature_columns = cargar_artefactos()
 except Exception as e:
-    st.error(f"Error al cargar los artefactos: {e}. Verifica que todos los archivos .joblib estén en la misma carpeta.")
+    st.error(f"Error al cargar los artefactos: {e}")
     st.stop()
 
+
+# ==============================
+# INTERFAZ
+# ==============================
+
 st.title("Clasificador - Red Neuronal")
-st.markdown("Ingresa los datos en el siguiente formulario para obtener una predicción del modelo.")
+st.markdown("Ingresa los datos para obtener una predicción del modelo.")
 
-# Creación del formulario de entrada
 with st.form("formulario_prediccion"):
-    st.subheader("Variables Numéricas")
-    input_data = {}
-    
-    # Cuadros editables numéricos generados dinámicamente
-    col1, col2 = st.columns(2)
-    with col1:
-        if 'Año desmovilización' in cols_escalar:
-            input_data['Año desmovilización'] = st.number_input('Año desmovilización', min_value=1950, max_value=2050, value=2010, step=1)
-    with col2:
-        if 'Total Integrantes grupo familiar' in cols_escalar:
-            input_data['Total Integrantes grupo familiar'] = st.number_input('Total Integrantes grupo familiar', min_value=1, max_value=30, value=1, step=1)
 
-    # Resto de numéricas si existieran
+    input_data = {}
+
+    st.subheader("Variables Numéricas")
     for col in cols_escalar:
-        if col not in input_data:
-            input_data[col] = st.number_input(col, value=0.0)
+        input_data[col] = st.number_input(col, value=0.0)
 
     st.subheader("Variables Categóricas (Binarias)")
-    # Cuadros desplegables para binarios (se excluyen variables target si estuvieran guardadas ahí)
     for col, le in le_binarios.items():
-        if col in feature_columns:  # Solo mostramos los que son características predictoras
+        if col in feature_columns:
             opciones = list(le.classes_)
             input_data[col] = st.selectbox(col, opciones)
 
     st.subheader("Variables Categóricas (Múltiples)")
-    # Cuadros desplegables extraídos del OneHotEncoder
     for i, col in enumerate(cols_categoricas):
         opciones = list(ohe.categories_[i])
         input_data[col] = st.selectbox(col, opciones)
 
-    # Botón de predicción
-    submit_button = st.form_submit_button(label='Realizar Predicción')
+    submit_button = st.form_submit_button("Realizar Predicción")
 
-# Lógica una vez se hace clic en el botón
+
+# ==============================
+# PREDICCIÓN
+# ==============================
+
 if submit_button:
-    # 1. Convertir los datos a DataFrame
-    df_input = pd.DataFrame([input_data])
 
-    # 2. Transformar Numéricas (Escalado)
-    df_input[cols_escalar] = scaler.transform(df_input[cols_escalar])
-
-    # 3. Transformar Binarias (Label Encoding)
-    for col, le in le_binarios.items():
-        if col in df_input.columns:
-            df_input[col] = le.transform(df_input[col])
-
-    # 4. Transformar Categóricas Múltiples (One-Hot Encoding)
-    df_cat = df_input[cols_categoricas]
-    cat_encoded = ohe.transform(df_cat)
-    if hasattr(cat_encoded, "toarray"):
-        cat_encoded = cat_encoded.toarray()
-    
     try:
-        ohe_col_names = ohe.get_feature_names_out(cols_categoricas)
-    except AttributeError: # Para versiones anteriores de scikit-learn
-        ohe_col_names = ohe.get_feature_names(cols_categoricas)
+        # 1️⃣ Convertir a DataFrame
+        df_input = pd.DataFrame([input_data])
+
+        # 2️⃣ Escalar numéricas
+        df_input[cols_escalar] = scaler.transform(df_input[cols_escalar])
+
+        # 3️⃣ Codificar binarias
+        for col, le in le_binarios.items():
+            if col in df_input.columns:
+                df_input[col] = le.transform(df_input[col])
+
+        # 4️⃣ One Hot Encoding
+        df_cat = df_input[cols_categoricas]
+        cat_encoded = ohe.transform(df_cat)
+
+        if hasattr(cat_encoded, "toarray"):
+            cat_encoded = cat_encoded.toarray()
+
+        try:
+            ohe_col_names = ohe.get_feature_names_out(cols_categoricas)
+        except:
+            ohe_col_names = ohe.get_feature_names(cols_categoricas)
+
+        df_cat_encoded = pd.DataFrame(cat_encoded, columns=ohe_col_names)
+
+        # 5️⃣ Eliminar categóricas originales
+        df_input = df_input.drop(columns=cols_categoricas)
+
+        # 6️⃣ Unir todo
+        df_final = pd.concat(
+            [df_input.reset_index(drop=True),
+             df_cat_encoded.reset_index(drop=True)],
+            axis=1
+        )
+
+        # 7️⃣ Asegurar orden correcto de columnas
+        df_final = df_final.reindex(columns=feature_columns, fill_value=0)
+
+        # 8️⃣ Predicción
+        prediccion = modelo.predict(df_final)[0]
+        probabilidad = modelo.predict_proba(df_final)[0][1]
+
+        # ==============================
+        # RESULTADOS
+        # ==============================
+
+        st.subheader("Resultado")
+
+        if prediccion == 1:
+            st.success("Ingresará al proceso ✅")
+        else:
+            st.error("No ingresará al proceso ❌")
+
+        st.write(f"Probabilidad estimada de ingreso: {probabilidad:.2%}")
+
+    except Exception as e:
+        st.error(f"Ocurrió un error durante la predicción: {e}")
